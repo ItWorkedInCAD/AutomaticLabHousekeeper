@@ -19,6 +19,9 @@ namespace ALH
         [KSPField(isPersistant = true)]
         public string selectedExperimentStorageUnit = "None";
 
+        [KSPField(isPersistant = true)]
+        public string ecPerMit = "-1.0"; //default to -1.0 to indicate uninitialized
+
         private bool selectingStorage = false;
         private List<Part> validStorageParts = new List<Part>();
 
@@ -184,8 +187,69 @@ namespace ALH
             base.OnStart(state);
             if (HighLogic.LoadedSceneIsFlight)
             {
+                CalculateAndStoreECPerMit();
                 Debug.Log($"[AutomaticLabHousekeeper] Lab settings loaded for {part.partInfo.title}");
                 UpdatePAW();
+            }
+        }
+
+        public override void OnSave(ConfigNode node)
+        {
+            base.OnSave(node);
+            CalculateAndStoreECPerMit();
+        }
+
+        private void CalculateAndStoreECPerMit()
+        {
+            if (part?.vessel == null || !part.vessel.loaded)
+                return;
+
+            float totalCombinableBandwidth = 0f;
+            float totalCombinableEC = 0f;
+            float lowestNonCombinableECPerMit = float.MaxValue;
+            bool foundAny = false;
+
+            foreach (Part p in part.vessel.Parts)
+            {
+                foreach (PartModule module in p.Modules)
+                {
+                    if (module.moduleName != "ModuleDataTransmitter")
+                        continue;
+
+                    float packetSize = -1f, packetResourceCost = 1f; // Default values, should be overridden by actual values
+                    bool antennaCombinable = false;
+
+                    if (float.TryParse(module.Fields.GetValue("packetSize").ToString() ?? "-1f", out packetSize))
+                    if (float.TryParse(module.Fields.GetValue("packetResourceCost").ToString() ?? "1f", out packetResourceCost))
+                    if (bool.TryParse(module.Fields.GetValue("antennaCombinable").ToString() ?? "false", out antennaCombinable))
+
+                    if (packetSize <= 0f) continue;
+
+                    float ecPerMitValue = packetResourceCost / packetSize;
+                    foundAny = true;
+
+                    if (antennaCombinable)
+                    {
+                        totalCombinableBandwidth += packetSize;
+                        totalCombinableEC += packetResourceCost;
+                    }
+                    else
+                    {
+                        if (ecPerMitValue < lowestNonCombinableECPerMit)
+                            lowestNonCombinableECPerMit = ecPerMitValue;
+                    }
+                }
+            }
+
+            float combinableECPerMit = totalCombinableBandwidth > 0f ? totalCombinableEC / totalCombinableBandwidth : float.MaxValue;
+            float best = Mathf.Min(combinableECPerMit, lowestNonCombinableECPerMit);
+
+            // Store in the module's moduleValues safely
+            ecPerMit = (foundAny && best < float.MaxValue ? best : 1f).ToString("F4");
+
+            if (!foundAny)
+            {
+                Debug.Log($"[AutomaticLabHousekeeper] No ModuleDataTransmitter found on vessel {part.vessel.vesselName}");
             }
         }
 
