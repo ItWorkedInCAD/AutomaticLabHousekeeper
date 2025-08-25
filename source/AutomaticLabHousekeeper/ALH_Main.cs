@@ -187,7 +187,7 @@ namespace ALH
                     {
                         ProtoPartModuleSnapshot labModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceLab");
                         ProtoPartModuleSnapshot alhModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "Module_AutomaticLabHousekeeper");
-                        ProtoPartModuleSnapshot converterModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceConverter");
+                        ProtoPartModuleSnapshot converterModule = protoPart.modules.FirstOrDefault(m => m.moduleName == "ModuleScienceConverter" || m.moduleName == "CW_ModuleScienceConverter");
 
                         if (labModule == null || alhModule == null) continue;
 
@@ -305,7 +305,10 @@ namespace ALH
             }
 
             ConfigNode partConfig = PartLoader.getPartInfoByName(protoPart.partName).partConfig;
-            ConfigNode moduleNode = partConfig.GetNodes("MODULE").FirstOrDefault(n => n.GetValue("name") == "ModuleScienceConverter");
+            ConfigNode moduleNode = partConfig.GetNodes("MODULE")
+                .FirstOrDefault(n =>
+                    n.GetValue("name") == "ModuleScienceConverter" ||
+                    n.GetValue("name") == "CW_ModuleScienceConverter");
 
             float scienceCap = float.Parse(moduleNode.GetValue("scienceCap"));
             DebugLog($"[AutomaticLabHousekeeper] scienceCap {scienceCap}");
@@ -337,8 +340,19 @@ namespace ALH
             double currentTime = Planetarium.GetUniversalTime();
             double timeElapsed = currentTime - lastUpdateTime;
 
-            float totalScientistLevel = CalculateScientistLevel(protoPart, scientistBonus);
-            DebugLog($"[AutomaticLabHousekeeper] totalScientistValue {totalScientistLevel}");
+            float totalScientistLevel;
+            if (converterModule.moduleName == "CW_ModuleScienceConverter")
+            {
+                // Special handling for CW_ModuleScienceConverter
+                totalScientistLevel = GetAIScientistsLevel(vessel, protoPart, scientistBonus);
+                DebugLog($"[AutomaticLabHousekeeper] CW_ModuleScienceConverter détecté, totalScientistLevel : {totalScientistLevel}");
+            }
+            else
+            {
+                // Normal calculation based on crew
+                totalScientistLevel = CalculateScientistLevel(protoPart, scientistBonus);
+                DebugLog($"[AutomaticLabHousekeeper] ModuleScienceConverter détecté, totalScientistLevel calculé : {totalScientistLevel}");
+            }
             double secondsPerDay = GameSettings.KERBIN_TIME ? 21600.0 : 86400.0;
             float scienceRatePerDay = (float)(secondsPerDay * totalScientistLevel * dataStored * dataProcessingMultiplier * scienceMultiplier) / Mathf.Pow(10f, researchTime);
             DebugLog($"[AutomaticLabHousekeeper] scienceRatePerDay {scienceRatePerDay}");
@@ -394,6 +408,48 @@ namespace ALH
 
             return Mathf.Max(totalScientistLevel, 0.0f); // If no scientists, processing stops
         }
+
+        float GetAIScientistsLevel(Vessel vessel, ProtoPartSnapshot converterPart, float scientistBonus)
+        {
+            float totalLevel = 0f;
+
+            // Find the parent index of the converter part
+            int parentIndex = converterPart.parentIdx;
+            if (parentIndex < 0 || parentIndex >= vessel.protoVessel.protoPartSnapshots.Count)
+                return 0f;
+
+            // Converter part's parent
+            ProtoPartSnapshot parentPart = vessel.protoVessel.protoPartSnapshots[parentIndex];
+
+            // All chips with this parent
+            var chips = vessel.protoVessel.protoPartSnapshots
+                .Where(p => p.parentIdx == parentIndex);
+
+            foreach (var chip in chips)
+            {
+                foreach (var module in chip.modules)
+                {
+                    if (module.moduleName == "CW_AIScientists")
+                    {
+                        bool isActive = false;
+                        float level = 0f;
+
+                        if (module.moduleValues.HasValue("isActive"))
+                            bool.TryParse(module.moduleValues.GetValue("isActive"), out isActive);
+
+                        if (module.moduleValues.HasValue("level"))
+                            float.TryParse(module.moduleValues.GetValue("level"), out level);
+
+                        if (isActive)
+                        {
+                            DebugLog($"[AutomaticLabHousekeeper] Found active AI Scientist on {chip.partName}, level {level}");
+                            totalLevel += (1.0f + scientistBonus * level);
+                        }
+                    }
+                }
+            }
+            return Mathf.Max(totalLevel, 0.0f);
+    }
 
         void PullDataIntoLab(Vessel vessel, Part part, Module_AutomaticLabHousekeeper alhModule)
         {
