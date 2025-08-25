@@ -172,7 +172,7 @@ namespace ALH
 
                         if (transmissionEnabled)
                         {
-                            TransferScienceFromLab(vessel, part, lab);
+                            TransferScienceFromLab(vessel, part, lab, alhModule);
                         }
 
                         if (dataPullingEnabled)
@@ -197,7 +197,7 @@ namespace ALH
                         if (transmissionEnabled)
                         {
                             SimulateScienceProcessingForUnloadedLab(vessel, protoPart, labModule, converterModule);
-                            TransferScienceFromUnloadedLab(vessel, protoPart, labModule);
+                            TransferScienceFromUnloadedLab(vessel, protoPart, labModule, alhModule);
                         }
 
                         if (dataPullingEnabled)
@@ -236,49 +236,90 @@ namespace ALH
             return true;
         }
 
-        void TransferScienceFromLab(Vessel vessel, Part part, ModuleScienceLab lab)
+        void TransferScienceFromLab(Vessel vessel, Part part, ModuleScienceLab lab, PartModule alhModule)
         {
             Debug.Log($"[AutomaticLabHousekeeper] Processing science transfer for lab {part.partName} in LOADED vessel {vessel.vesselName}");
-
-            if (lab.storedScience >= 1)
+            float ecPerMit = GetECPerMit(alhModule);
+            if (ecPerMit < 0)
             {
-                float wholeScience = Mathf.Floor(lab.storedScience);
-                float remainingScience = lab.storedScience - wholeScience;
-
-                Debug.Log($"[AutomaticLabHousekeeper] Transferring {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
-
-                ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
-                lab.storedScience = remainingScience;
-
-                ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                Debug.LogWarning($"[AutomaticLabHousekeeper] Invalid ecPerMit value ({ecPerMit}) in ALH module on {part.partName}. Skipping science transfer.");
             }
             else
             {
-                Debug.Log("[AutomaticLabHousekeeper] Not enough storedScience");
+                if (lab.storedScience >= 1)
+                {
+                    float wholeScience = Mathf.Floor(lab.storedScience);
+                    float remainingScience = lab.storedScience - wholeScience;
+                    float requiredEC = wholeScience * GetMitPerScience() * ecPerMit;
+                    double ecAvailable = getAvailableEC(vessel);
+
+                    if (ecAvailable < requiredEC)
+                    {
+                        Debug.Log($"[AutomaticLabHousekeeper] Not enough EC ({ecAvailable:F1} / {requiredEC:F1}) for science transfer on {vessel.vesselName}");
+                        ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0031", requiredEC, ecAvailable, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                    }
+                    else
+                    {
+                        DebugLog($"[AutomaticLabHousekeeper] Sufficient EC ({ecAvailable:F1} / {requiredEC:F1}) for science transfer on {vessel.vesselName}");
+                        // Consume EC
+                        double ecTaken = vessel.rootPart.RequestResource("ElectricCharge", (double)requiredEC);
+                        DebugLog($"[AutomaticLabHousekeeper] Consumed {ecTaken:F2} EC for transmitting {wholeScience} science from {vessel.vesselName}");
+                        DebugLog($"[AutomaticLabHousekeeper] Transferring {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
+                        // Add science to R&D and update lab storage
+                        ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
+                        lab.storedScience = remainingScience;
+
+                        ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                    }
+
+
+                }
+                else
+                {
+                    Debug.Log("[AutomaticLabHousekeeper] Not enough storedScience");
+                }
             }
         }
 
-        void TransferScienceFromUnloadedLab(Vessel vessel, ProtoPartSnapshot protoPart, ProtoPartModuleSnapshot labModule)
+        void TransferScienceFromUnloadedLab(Vessel vessel, ProtoPartSnapshot protoPart, ProtoPartModuleSnapshot labModule, ProtoPartModuleSnapshot alhModule)
         {
             Debug.Log($"[AutomaticLabHousekeeper] Processing science transfer for lab {protoPart.partName} in UNLOADED vessel {vessel.vesselName}");
-
-            float storedScience = float.Parse(labModule.moduleValues.GetValue("storedScience"));
-
-            if (storedScience >= 1)
+            float ecPerMit = GetECPerMit(alhModule);
+            if (ecPerMit < 0)
             {
-                float wholeScience = Mathf.Floor(storedScience);
-                float remainingScience = storedScience - wholeScience;
-
-                Debug.Log($"[AutomaticLabHousekeeper] Transferring {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
-
-                ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
-                labModule.moduleValues.SetValue("storedScience", remainingScience.ToString("F2"));
-
-                ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                Debug.LogWarning($"[AutomaticLabHousekeeper] Invalid ecPerMit value ({ecPerMit}) in ALH module on {protoPart.partName}. Skipping science transfer.");
             }
             else
             {
-                Debug.Log("[AutomaticLabHousekeeper] Not enough storedScience");
+                float storedScience = float.Parse(labModule.moduleValues.GetValue("storedScience"));
+                if (storedScience >= 1)
+                {
+                    float wholeScience = Mathf.Floor(storedScience);
+                    float remainingScience = storedScience - wholeScience;
+                    float requiredEC = wholeScience * GetMitPerScience() * ecPerMit;
+                    double ecAvailable = getAvailableEC(vessel);
+
+                    if (ecAvailable < requiredEC)
+                    {
+                        Debug.Log($"[AutomaticLabHousekeeper] Not enough EC ({ecAvailable:F1} / {requiredEC:F1}) for science transfer on {vessel.vesselName} (UNLOADED)");
+                        ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0031", requiredEC, ecAvailable, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                    }
+                    else
+                    {
+                        DebugLog($"[AutomaticLabHousekeeper] Sufficient EC ({ecAvailable:F1} / {requiredEC:F1}) for science transfer on {vessel.vesselName} (UNLOADED)");
+                        DebugLog($"[AutomaticLabHousekeeper] Transferring {wholeScience} science from {vessel.vesselName} to R&D, keeping {remainingScience} science in the lab");
+                        // For unloaded, we cannot request EC, so we just check
+                        // Add science to R&D and update lab storage
+                        ResearchAndDevelopment.Instance.AddScience(wholeScience, TransactionReasons.ScienceTransmission);
+                        labModule.moduleValues.SetValue("storedScience", remainingScience.ToString("F2"));
+
+                        ScreenMessages.PostScreenMessage(Localizer.Format("#autoLOC_ALH_0003", wholeScience, vessel.vesselName), 10f, ScreenMessageStyle.UPPER_CENTER);
+                    }
+                }
+                else
+                {
+                    Debug.Log("[AutomaticLabHousekeeper] Not enough storedScience");
+                }
             }
         }
 
@@ -610,5 +651,78 @@ namespace ALH
                 Debug.Log($"{message}");
             }
         }
+
+        // Helper method to get mitPerScience (inverse of science per MB)
+        private float GetMitPerScience()
+        {
+            return 1f; // Vanilla KSP uses 1 Mit per Science by default
+            //TODO: Add support for mods that change this ratio
+        }
+
+        private double getAvailableEC(Vessel vessel)
+        {
+            if (vessel == null)
+            {
+                Debug.LogError("[AutomaticLabHousekeeper] getAvailableEC called with null vessel.");
+                return -1;
+            }
+
+            double ecAvailable = 0;
+            if (vessel.loaded)
+            {
+                foreach (Part p in vessel.Parts)
+                {
+                    foreach (PartResource r in p.Resources)
+                    {
+                        if (r.resourceName == "ElectricCharge")
+                            ecAvailable += r.amount;
+                    }
+
+                }
+            }
+            else
+            {
+                    foreach (var PartSnap in vessel.protoVessel.protoPartSnapshots)
+                    {
+                        foreach (var res in PartSnap.resources)
+                        {
+                            if (res.resourceName == "ElectricCharge")
+                                ecAvailable += double.Parse(res.amount.ToString("F2"));
+                        }
+                    }
+            }
+
+            return ecAvailable;
+        }
+
+        private float GetECPerMit(object alhModule)
+        {
+            float ecPerMit = -1f; // fallback default
+            string value = null; 
+            switch (alhModule)
+            {
+                case Module_AutomaticLabHousekeeper loadedModule:
+                    value = loadedModule.ecPerMit;
+                    break;
+                case ProtoPartModuleSnapshot protoModule when protoModule.moduleValues.HasValue("ecPerMit"):
+                    value = protoModule.moduleValues.GetValue("ecPerMit");
+                    break;
+                default:
+                    Debug.LogWarning($"[AutomaticLabHousekeeper] GetECPerMit called with unknown alhModule type. Using fallback EC per Mit = {ecPerMit}");
+                    return ecPerMit;
+
+            }
+
+            if (!string.IsNullOrEmpty(value) && float.TryParse(value, out float ParsedEcPerMit))
+                return ParsedEcPerMit;
+            else
+            {
+                DebugLog($"[AutomaticLabHousekeeper] Failed to parse ecPerMit ('{value}'), using fallback -1");
+                return ecPerMit;                
+            }
+        }
     }
 }
+
+
+
